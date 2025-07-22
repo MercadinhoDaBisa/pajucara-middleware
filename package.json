@@ -1,0 +1,27 @@
+{
+  "name": "pajucara-middleware-yampi",
+  "version": "1.0.0",
+  "description": "Middleware para integração Yampi com Pajuçara (SSW Logística)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "yampi",
+    "pajucara",
+    "ssw",
+    "logistica",
+    "frete",
+    "middleware"
+  ],
+  "author": "Your Name",
+  "license": "ISC"
+}
