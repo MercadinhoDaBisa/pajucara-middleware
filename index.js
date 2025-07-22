@@ -35,6 +35,7 @@ app.post('/cotacao', async (req, res) => {
   console.log('Assinatura Yampi recebida (X-Yampi-Hmac-SHA256):', yampiSignature);
   console.log('Chave Secreta Yampi (YAMPI_SECRET_TOKEN do .env/Render):', YAMPI_SECRET_TOKEN);
 
+  // Verificação de segurança Yampi
   if (!yampiSignature || !YAMPI_SECRET_TOKEN) {
     console.error('Erro de Segurança: Assinatura Yampi ou Chave Secreta ausente.');
     return res.status(401).json({ error: 'Acesso não autorizado. Assinatura ou Chave Secreta Yampi ausente.' });
@@ -45,7 +46,7 @@ app.post('/cotacao', async (req, res) => {
     const hmac = crypto.createHmac('sha256', YAMPI_SECRET_TOKEN);
     const parsedBody = JSON.parse(requestBodyRaw.toString('utf8'));
     const normalizedBodyString = JSON.stringify(parsedBody); 
-
+    
     hmac.update(normalizedBodyString); 
     calculatedSignature = hmac.digest('base64');
   } catch (error) {
@@ -78,22 +79,22 @@ app.post('/cotacao', async (req, res) => {
       yampiData.skus.forEach(sku => {
         const quantity = sku.quantity || 1;
         pesoTotal += (sku.weight || 0) * quantity; 
-
+        
         // Calcular cubagem individual em m³ e somar
         const lengthCm = sku.length || 0;
         const widthCm = sku.width || 0;
         const heightCm = sku.height || 0;
         // Cubagem em m³ por volume = (L * C * A) / 1,000,000 (se L,C,A em cm)
         cubagemTotal += (lengthCm * widthCm * heightCm / 1000000) * quantity; 
-
+        
         qtdeVolumes += quantity; // Somar a quantidade de volumes/itens
       });
     }
 
     // Definir os tipos de serviço SSW que desejamos cotar
     const sswTiposServico = [
-      { id: "1", nome: "Rodoviário" }, // Exemplo: Rodoviário
-      { id: "2", nome: "Aéreo" }      // Exemplo: Aéreo
+      { id: "1", nome: "Rodoviário" }, 
+      { id: "2", nome: "Aéreo" }      
       // Adicione outros tipos se a Pajuçara oferecer e você quiser cotar
     ];
 
@@ -126,7 +127,10 @@ app.post('/cotacao', async (req, res) => {
 
       try {
         const respostaSSW = await axios.post(
-          'https://ssw.inf.br/ws/sswCotacaoColeta/CotacaoColeta.asmx/json/CalculaFrete', 
+          // ************************************************************
+          // ESTA É A LINHA QUE FOI ALTERADA PARA O ENDPOINT 'Cotar'
+          'https://ssw.inf.br/ws/sswCotacaoColeta/CotacaoColeta.asmx/json/Cotar', 
+          // ************************************************************
           payloadCotacaoSSW,
           {
             headers: {
