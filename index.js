@@ -1,7 +1,6 @@
 require('dotenv').config(); // Carrega variáveis de ambiente do arquivo .env
 const express = require('express'); // Framework web para Node.js
-const axios = require('axios'); // Cliente HTTP para fazer requisições (para a Jadlog e SSW)
-const https = require('https'); // Módulo HTTPS para configurar o agente (se rejectUnauthorized for false)
+const axios = require('axios'); // Cliente HTTP para fazer requisições (para a SSW)
 const crypto = require('crypto'); // Módulo nativo do Node.js para operações criptográficas (HMAC)
 
 const app = express(); // Inicializa o aplicativo Express
@@ -10,25 +9,14 @@ const app = express(); // Inicializa o aplicativo Express
 app.use(express.raw({ type: 'application/json' }));
 app.use(express.json());
 
-// Agente HTTPS para lidar com certificados SSL (se necessário)
-const agent = new https.Agent({
-    rejectUnauthorized: false
-});
-
-// --- Variáveis de Ambiente Comuns/Yampi ---
+// --- Variáveis de Ambiente Yampi ---
 const YAMPI_SECRET_TOKEN = process.env.YAMPI_SECRET_TOKEN;
-
-// --- Variáveis de Ambiente Jadlog ---
-const JADLOG_TOKEN = process.env.JADLOG_TOKEN;
-const JADLOG_CNPJ = process.env.JADLOG_CNPJ;
-const JADLOG_ACCOUNT = process.env.JADLOG_ACCOUNT;
 
 // --- Variáveis de Ambiente Pajuçara (SSW) ---
 const SSW_LOGIN = process.env.SSW_LOGIN;
 const SSW_PASSWORD = process.env.SSW_PASSWORD;
-const SSW_DOMAIN = process.env.SSW_DOMAIN;
-const SSW_CNPJ = process.env.SSW_CNPJ;
-
+const SSW_DOMAIN = process.env.SSW_DOMAIN; // Domínio, ex: "PAJ"
+const SSW_CNPJ = process.env.SSW_CNPJ;     // CNPJ da Pajuçara
 
 app.post('/cotacao', async (req, res) => {
     console.log('Todos os Headers Recebidos:', req.headers); // Log para depuração
@@ -74,7 +62,7 @@ app.post('/cotacao', async (req, res) => {
         const yampiData = JSON.parse(requestBodyRaw.toString('utf8'));
         console.log('Payload Yampi Recebido:', JSON.stringify(yampiData, null, 2));
 
-        const cepOrigemFixo = "30720404"; // CEP fixo de origem para Jadlog e Pajuçara
+        const cepOrigemFixo = "30720404"; // CEP fixo de origem para Pajuçara
         const cepDestino = yampiData.zipcode ? yampiData.zipcode.replace(/\D/g, '') : null;
         const valorDeclarado = yampiData.amount || 0;
         const cnpjCpfDestinatario = yampiData.cart && yampiData.cart.customer ? yampiData.cart.customer.document : null;
@@ -99,91 +87,13 @@ app.post('/cotacao', async (req, res) => {
 
         const opcoesFrete = [];
 
-        // --- Cotação Jadlog ---
-        try {
-            const modalidadesDesejadasJadlog = [3, 5]; // 3 para Package, 5 para Econômico
-            const freteRequestsJadlog = modalidadesDesejadasJadlog.map(modalidade => ({
-                cepori: cepOrigemFixo,
-                cepdes: cepDestino,
-                frap: null,
-                peso: pesoTotal,
-                cnpj: JADLOG_CNPJ, // AGORA LENDO DA VARIÁVEL DE AMBIENTE
-                conta: JADLOG_ACCOUNT,
-                contrato: null,
-                modalidade: modalidade,
-                tpentrega: "D",
-                tpseguro: "N",
-                vldeclarado: valorDeclarado,
-                vlcoleta: 0
-            }));
-
-            const payloadCotacaoJadlog = {
-                frete: freteRequestsJadlog
-            };
-
-            console.log('Payload Jadlog Enviado:', JSON.stringify(payloadCotacaoJadlog, null, 2));
-
-            const respostaJadlog = await axios.post(
-                'https://www.jadlog.com.br/embarcador/api/frete/valor',
-                payloadCotacaoJadlog,
-                {
-                    headers: {
-                        Authorization: `Bearer ${JADLOG_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    },
-                    httpsAgent: agent
-                }
-            );
-
-            console.log('Resposta Bruta da Jadlog:', JSON.stringify(respostaJadlog.data, null, 2));
-
-            if (respostaJadlog.data && Array.isArray(respostaJadlog.data.frete) && respostaJadlog.data.frete.length > 0) {
-                respostaJadlog.data.frete.forEach(frete => {
-                    let nomeModalidade = "Jadlog Padrão";
-                    let serviceModalidade = "Jadlog";
-
-                    switch (frete.modalidade) {
-                        case 3:
-                            nomeModalidade = "Jadlog Package";
-                            serviceModalidade = "Jadlog Package";
-                            break;
-                        case 5:
-                            nomeModalidade = "Jadlog Econômico";
-                            serviceModalidade = "Jadlog Economico";
-                            break;
-                        default:
-                            nomeModalidade = `Jadlog (Mod. ${frete.modalidade})`;
-                            serviceModalidade = `Jadlog ${frete.modalidade}`;
-                    }
-
-                    opcoesFrete.push({
-                        "name": nomeModalidade,
-                        "service": serviceModalidade,
-                        "price": frete.vltotal || 0,
-                        "days": frete.prazo || 0,
-                        "quote_id": `jadlog_${frete.modalidade}`
-                    });
-                });
-            } else {
-                console.warn('Resposta da Jadlog não contém fretes no formato esperado ou está vazia:', respostaJadlog.data);
-            }
-
-        } catch (erro) {
-            console.error('Erro na requisição Jadlog ou processamento:', erro.message);
-            if (erro.response && erro.response.data) {
-                console.error('Detalhes do erro da Jadlog:', erro.response.data);
-            }
-            // Não retorna erro aqui para continuar com a cotação da Pajuçara
-        }
-
-
         // --- Cotação Pajuçara (SSW) ---
         try {
             // Requisição para SSW Rodoviária
             const payloadRodoviarioSSW = {
                 param: {
                     "Chave": SSW_DOMAIN, // Lendo da variável de ambiente
-                    "CNPJ": SSW_CNPJ,
+                    "CNPJ": SSW_CNPJ,     // Lendo da variável de ambiente
                     "Login": SSW_LOGIN,
                     "Senha": SSW_PASSWORD
                 },
@@ -219,7 +129,7 @@ app.post('/cotacao', async (req, res) => {
             const payloadAereoSSW = {
                 param: {
                     "Chave": SSW_DOMAIN, // Lendo da variável de ambiente
-                    "CNPJ": SSW_CNPJ,
+                    "CNPJ": SSW_CNPJ,     // Lendo da variável de ambiente
                     "Login": SSW_LOGIN,
                     "Senha": SSW_PASSWORD
                 },
@@ -256,7 +166,6 @@ app.post('/cotacao', async (req, res) => {
             if (error.response && error.response.data) {
                 console.error('Detalhes do erro da SSW:', error.response.data);
             }
-            // Não retorna erro aqui para continuar processando outras cotações
         }
 
         const respostaFinalYampi = {
@@ -274,7 +183,7 @@ app.post('/cotacao', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Middleware de Cotação de Frete rodando (Jadlog e Pajuçara)');
+    res.send('Middleware da Pajuçara rodando');
 });
 
 const PORT = process.env.PORT || 3000;
