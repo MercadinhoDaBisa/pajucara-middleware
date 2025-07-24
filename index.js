@@ -3,7 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const { create } = require('xmlbuilder2');
-const xml2js = require('xml2js'); // <<< NOVIDADE: Importa xml2js
+const xml2js = require('xml2js');
 
 const app = express();
 
@@ -63,14 +63,18 @@ app.post('/cotacao', async (req, res) => {
         const cepOrigemFixo = "30720404";
         const cepDestino = yampiData.zipcode ? yampiData.zipcode.replace(/\D/g, '') : null;
         const valorDeclarado = yampiData.amount || 0;
-        const cnpjCpfDestinatario = yampiData.cart && yampiData.cart.customer ? yampiData.cart.customer.document : null;
+        // >>> MODIFICAÇÃO AQUI: Adiciona CNPJ padrão se não houver documento
+        const cnpjCpfDestinatario = yampiData.cart && yampiData.cart.customer && yampiData.cart.customer.document
+            ? yampiData.cart.customer.document.replace(/\D/g, '')
+            : "00000000000100"; // CNPJ genérico para teste se não houver
 
         let pesoTotal = 0;
         let cubagemTotal = 0;
         let qtdeVolumeTotal = 0;
+        let primeiroSkuDimensao = { length: 0, width: 0, height: 0 }; // Para pegar as dimensões do primeiro item
 
         if (yampiData.skus && Array.isArray(yampiData.skus)) {
-            yampiData.skus.forEach(sku => {
+            yampiData.skus.forEach((sku, index) => { // Adiciona index para pegar o primeiro
                 const pesoItem = sku.weight || 0;
                 const quantidadeItem = sku.quantity || 1;
                 const comprimento = sku.length || 0;
@@ -80,6 +84,10 @@ app.post('/cotacao', async (req, res) => {
                 pesoTotal += pesoItem * quantidadeItem;
                 cubagemTotal += (comprimento * largura * altura / 1000000) * quantidadeItem;
                 qtdeVolumeTotal += quantidadeItem;
+
+                if (index === 0) { // Armazena as dimensões do primeiro SKU
+                    primeiroSkuDimensao = { length: comprimento, width: largura, height: altura };
+                }
             });
         }
 
@@ -113,16 +121,18 @@ app.post('/cotacao', async (req, res) => {
                         .ele('mercadoria', { 'xsi:type': 'xsd:integer' }).txt(methodParams.mercadoria || 1).up()
                         .ele('ciffob', { 'xsi:type': 'xsd:string' }).txt(methodParams.ciffob || 'C').up()
                         .ele('cnpjRemetente', { 'xsi:type': 'xsd:string' }).txt(SSW_CNPJ).up()
-                        .ele('cnpjDestinatario', { 'xsi:type': 'xsd:string' }).txt(cnpjCpfDestinatario || '').up()
+                        // >>> MODIFICAÇÃO AQUI: Usa o CNPJ do cliente ou o padrão
+                        .ele('cnpjDestinatario', { 'xsi:type': 'xsd:string' }).txt(cnpjCpfDestinatario).up()
                         .ele('observacao', { 'xsi:type': 'xsd:string' }).txt('').up()
                         .ele('trt', { 'xsi:type': 'xsd:string' }).txt(methodParams.trt || 'N').up()
                         .ele('coletar', { 'xsi:type': 'xsd:string' }).txt(methodParams.coletar || 'N').up()
                         .ele('entDificil', { 'xsi:type': 'xsd:string' }).txt(methodParams.entDificil || 'N').up()
                         .ele('destContribuinte', { 'xsi:type': 'xsd:string' }).txt(methodParams.destContribuinte || 'N').up()
                         .ele('qtdePares', { 'xsi:type': 'xsd:integer' }).txt('0').up()
-                        .ele('altura', { 'xsi:type': 'xsd:decimal' }).txt('0').up()
-                        .ele('largura', { 'xsi:type': 'xsd:decimal' }).txt('0').up()
-                        .ele('comprimento', { 'xsi:type': 'xsd:decimal' }).txt('0').up()
+                        // >>> MODIFICAÇÃO AQUI: Tenta enviar as dimensões reais, em metros
+                        .ele('altura', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.height / 100).toFixed(2)).up()
+                        .ele('largura', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.width / 100).toFixed(2)).up()
+                        .ele('comprimento', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.length / 100).toFixed(2)).up()
                         .ele('fatorMultiplicador', { 'xsi:type': 'xsd:integer' }).txt('1').up()
                     .up()
                 .up()
@@ -130,20 +140,17 @@ app.post('/cotacao', async (req, res) => {
             return root;
         };
 
-        // Função para parsear a string XML aninhada e extrair frete/prazo
         const parseSswReturnXml = async (xmlString) => {
-            // Remove o primeiro envelope SOAP e o `<return>` para obter apenas o XML aninhado
             const innerXmlMatch = xmlString.match(/<return xsi:type="xsd:string">([\s\S]*)<\/return>/);
             if (!innerXmlMatch || !innerXmlMatch[1]) {
                 console.error('Não foi possível encontrar o XML aninhado dentro da resposta SSW.');
                 return null;
             }
-            // Descodifica as entidades HTML para um XML válido
             const decodedInnerXml = innerXmlMatch[1]
                                     .replace(/&lt;/g, '<')
                                     .replace(/&gt;/g, '>')
                                     .replace(/&quot;/g, '"')
-                                    .replace(/&amp;/g, '&'); // Certifique-se de descodificar &amp; antes de outras!
+                                    .replace(/&amp;/g, '&');
 
             console.log('XML Interno Descodificado para Parse:', decodedInnerXml);
 
@@ -159,18 +166,17 @@ app.post('/cotacao', async (req, res) => {
                         const erro = result.cotacao.erro ? parseInt(result.cotacao.erro, 10) : -1;
                         const mensagem = result.cotacao.mensagem || 'Erro desconhecido';
 
-                        if (erro === 0) { // Se o erro for 0, a cotação foi bem sucedida
+                        if (erro === 0) {
                            return resolve({ frete, prazo, mensagem });
                         } else {
                            console.warn(`SSW Retorno - Erro ${erro}: ${mensagem}`);
-                           return resolve(null); // Retorna null ou um objeto com erro
+                           return resolve(null);
                         }
                     }
-                    resolve(null); // Caso não encontre a estrutura esperada
+                    resolve(null);
                 });
             });
         };
-
 
         // --- Requisição para SSW Rodoviária ---
         try {
@@ -199,13 +205,12 @@ app.post('/cotacao', async (req, res) => {
             const sswResponseXml = responseRodoviarioSSW.data;
             console.log('Resposta Bruta SSW (Rodoviário - XML):', sswResponseXml);
 
-            // Tenta parsear o XML aninhado da resposta
             const cotacaoRodoviaria = await parseSswReturnXml(sswResponseXml);
             
             if (cotacaoRodoviaria && cotacaoRodoviaria.frete > 0) {
                 opcoesFrete.push({
                     "name": "Pajuçara Rodoviário",
-                    "service": "Pajucara_Rodoviario",
+                    "service": "Pajucara_Rodoviario", // >>> CONFIRME ESTE NOME NO PAINEL YAMPI
                     "price": cotacaoRodoviaria.frete,
                     "days": cotacaoRodoviaria.prazo,
                     "quote_id": "pajucara_rodoviario"
@@ -225,9 +230,6 @@ app.post('/cotacao', async (req, res) => {
         }
         
         // --- Requisição para SSW Aérea ---
-        // Se a API da Pajuçara tiver um método ou parâmetro específico para 'Aéreo',
-        // você precisará ajustar o 'createSoapEnvelope' ou o 'sswSoapAction' aqui.
-        // Por enquanto, está fazendo a mesma cotação do Rodoviário, o que pode não ser o ideal.
         try {
             const payloadAereoSSW = createSoapEnvelope({
                 mercadoria: 1, 
@@ -259,7 +261,7 @@ app.post('/cotacao', async (req, res) => {
             if (cotacaoAerea && cotacaoAerea.frete > 0) {
                 opcoesFrete.push({
                     "name": "Pajuçara Aéreo",
-                    "service": "Pajucara_Aereo",
+                    "service": "Pajucara_Aereo", // >>> CONFIRME ESTE NOME NO PAINEL YAMPI
                     "price": cotacaoAerea.frete,
                     "days": cotacaoAerea.prazo,
                     "quote_id": "pajucara_aereo"
