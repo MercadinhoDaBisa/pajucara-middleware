@@ -2,19 +2,14 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const { create } = require('xmlbuilder2'); // <<< NOVIDADE: Importa xmlbuilder2
+const { create } = require('xmlbuilder2');
+const xml2js = require('xml2js'); // <<< NOVIDADE: Importa xml2js
 
 const app = express();
 
-// Manter express.raw para pegar o body bruto da Yampi para validação HMAC
 app.use(express.raw({ type: 'application/json' }));
 
-// Remover express.json() pois vamos parsear o JSON da Yampi manualmente e construir XML para SSW
-
-// --- Variáveis de Ambiente Yampi ---
 const YAMPI_SECRET_TOKEN = process.env.YAMPI_SECRET_TOKEN;
-
-// --- Variáveis de Ambiente Pajuçara (SSW) ---
 const SSW_LOGIN = process.env.SSW_LOGIN;
 const SSW_PASSWORD = process.env.SSW_PASSWORD;
 const SSW_DOMAIN = process.env.SSW_DOMAIN;
@@ -39,10 +34,10 @@ app.post('/cotacao', async (req, res) => {
     }
 
     let calculatedSignature;
-    let yampiData; // Declarar yampiData aqui para ser acessível globalmente no try/catch
+    let yampiData;
     try {
         const hmac = crypto.createHmac('sha256', YAMPI_SECRET_TOKEN);
-        yampiData = JSON.parse(requestBodyRaw.toString('utf8')); // <<< ATENÇÃO: Parseia o body bruto aqui
+        yampiData = JSON.parse(requestBodyRaw.toString('utf8'));
         const normalizedBodyString = JSON.stringify(yampiData);
 
         hmac.update(normalizedBodyString);
@@ -71,19 +66,18 @@ app.post('/cotacao', async (req, res) => {
         const cnpjCpfDestinatario = yampiData.cart && yampiData.cart.customer ? yampiData.cart.customer.document : null;
 
         let pesoTotal = 0;
-        let cubagemTotal = 0; // em m³
+        let cubagemTotal = 0;
         let qtdeVolumeTotal = 0;
 
         if (yampiData.skus && Array.isArray(yampiData.skus)) {
             yampiData.skus.forEach(sku => {
                 const pesoItem = sku.weight || 0;
                 const quantidadeItem = sku.quantity || 1;
-                const comprimento = sku.length || 0; // cm
-                const largura = sku.width || 0;     // cm
-                const altura = sku.height || 0;     // cm
+                const comprimento = sku.length || 0;
+                const largura = sku.width || 0;
+                const altura = sku.height || 0;
 
                 pesoTotal += pesoItem * quantidadeItem;
-                // cubagem total em m³
                 cubagemTotal += (comprimento * largura * altura / 1000000) * quantidadeItem;
                 qtdeVolumeTotal += quantidadeItem;
             });
@@ -91,11 +85,9 @@ app.post('/cotacao', async (req, res) => {
 
         const opcoesFrete = [];
 
-        // --- URL e SOAPAction para Pajuçara (SSW) ---
         const sswApiUrl = 'https://ssw.inf.br/ws/sswCotacaoColeta/index.php';
         const sswSoapAction = 'urn:sswinfbr.sswCotacaoColeta#cotarSite';
 
-        // Helper para criar o envelope SOAP
         const createSoapEnvelope = (methodParams) => {
             const root = create({ version: '1.0', encoding: 'utf-8' })
                 .ele('SOAP-ENV:Envelope', {
@@ -106,8 +98,7 @@ app.post('/cotacao', async (req, res) => {
                     'xmlns:tns': 'urn:sswinfbr.sswCotacaoColeta'
                 })
                 .ele('SOAP-ENV:Body', { 'SOAP-ENV:encodingStyle': 'http://schemas.xmlsoap.org/soap/encoding/' })
-                    .ele('tns:cotarSite') // <<<< Método SOAP a ser chamado
-                        // Adiciona cada parâmetro da função cotarSite
+                    .ele('tns:cotarSite')
                         .ele('dominio', { 'xsi:type': 'xsd:string' }).txt(SSW_DOMAIN).up()
                         .ele('login', { 'xsi:type': 'xsd:string' }).txt(SSW_LOGIN).up()
                         .ele('senha', { 'xsi:type': 'xsd:string' }).txt(SSW_PASSWORD).up()
@@ -115,37 +106,76 @@ app.post('/cotacao', async (req, res) => {
                         .ele('senhaPagador', { 'xsi:type': 'xsd:string' }).txt(SSW_PAGADOR_PASSWORD).up()
                         .ele('cepOrigem', { 'xsi:type': 'xsd:integer' }).txt(parseInt(cepOrigemFixo)).up()
                         .ele('cepDestino', { 'xsi:type': 'xsd:integer' }).txt(parseInt(cepDestino)).up()
-                        .ele('valorNF', { 'xsi:type': 'xsd:decimal' }).txt(valorDeclarado.toFixed(2)).up() // Formata para 2 casas decimais
+                        .ele('valorNF', { 'xsi:type': 'xsd:decimal' }).txt(valorDeclarado.toFixed(2)).up()
                         .ele('quantidade', { 'xsi:type': 'xsd:integer' }).txt(qtdeVolumeTotal).up()
-                        .ele('peso', { 'xsi:type': 'xsd:decimal' }).txt(pesoTotal.toFixed(3)).up() // Peso com 3 casas decimais
-                        .ele('volume', { 'xsi:type': 'xsd:decimal' }).txt(cubagemTotal.toFixed(6)).up() // Cubagem com 6 casas decimais
-                        // Novos campos do WSDL (usando valores padrão ou do ambiente, se aplicável)
+                        .ele('peso', { 'xsi:type': 'xsd:decimal' }).txt(pesoTotal.toFixed(3)).up()
+                        .ele('volume', { 'xsi:type': 'xsd:decimal' }).txt(cubagemTotal.toFixed(6)).up()
                         .ele('mercadoria', { 'xsi:type': 'xsd:integer' }).txt(methodParams.mercadoria || 1).up()
-                        .ele('ciffob', { 'xsi:type': 'xsd:string' }).txt(methodParams.ciffob || 'C').up() // C = CIF
-                        .ele('cnpjRemetente', { 'xsi:type': 'xsd:string' }).txt(SSW_CNPJ).up() // Remetente é o próprio pagador
+                        .ele('ciffob', { 'xsi:type': 'xsd:string' }).txt(methodParams.ciffob || 'C').up()
+                        .ele('cnpjRemetente', { 'xsi:type': 'xsd:string' }).txt(SSW_CNPJ).up()
                         .ele('cnpjDestinatario', { 'xsi:type': 'xsd:string' }).txt(cnpjCpfDestinatario || '').up()
-                        .ele('observacao', { 'xsi:type': 'xsd:string' }).txt('').up() // Vazio por padrão
+                        .ele('observacao', { 'xsi:type': 'xsd:string' }).txt('').up()
                         .ele('trt', { 'xsi:type': 'xsd:string' }).txt(methodParams.trt || 'N').up()
                         .ele('coletar', { 'xsi:type': 'xsd:string' }).txt(methodParams.coletar || 'N').up()
                         .ele('entDificil', { 'xsi:type': 'xsd:string' }).txt(methodParams.entDificil || 'N').up()
                         .ele('destContribuinte', { 'xsi:type': 'xsd:string' }).txt(methodParams.destContribuinte || 'N').up()
-                        // Campos não enviados pelo Yampi, mas presentes no WSDL. Se a SSW exigir,
-                        // eles terão que vir com valores padrao ou null se nao se aplicarem ao seu cenário
-                        .ele('qtdePares', { 'xsi:type': 'xsd:integer' }).txt('0').up() // Assume 0, se não houver pares
-                        .ele('altura', { 'xsi:type': 'xsd:decimal' }).txt('0').up() // Assume 0 se não for por item
-                        .ele('largura', { 'xsi:type': 'xsd:decimal' }).txt('0').up() // Assume 0 se não for por item
-                        .ele('comprimento', { 'xsi:type': 'xsd:decimal' }).txt('0').up() // Assume 0 se não for por item
-                        .ele('fatorMultiplicador', { 'xsi:type': 'xsd:integer' }).txt('1').up() // Assume 1, se não houver multiplicador
-                    .up() // Fecha tns:cotarSite
-                .up() // Fecha SOAP-ENV:Body
-            .end({ prettyPrint: true }); // prettyPrint para log mais legível
+                        .ele('qtdePares', { 'xsi:type': 'xsd:integer' }).txt('0').up()
+                        .ele('altura', { 'xsi:type': 'xsd:decimal' }).txt('0').up()
+                        .ele('largura', { 'xsi:type': 'xsd:decimal' }).txt('0').up()
+                        .ele('comprimento', { 'xsi:type': 'xsd:decimal' }).txt('0').up()
+                        .ele('fatorMultiplicador', { 'xsi:type': 'xsd:integer' }).txt('1').up()
+                    .up()
+                .up()
+            .end({ prettyPrint: true });
             return root;
         };
+
+        // Função para parsear a string XML aninhada e extrair frete/prazo
+        const parseSswReturnXml = async (xmlString) => {
+            // Remove o primeiro envelope SOAP e o `<return>` para obter apenas o XML aninhado
+            const innerXmlMatch = xmlString.match(/<return xsi:type="xsd:string">([\s\S]*)<\/return>/);
+            if (!innerXmlMatch || !innerXmlMatch[1]) {
+                console.error('Não foi possível encontrar o XML aninhado dentro da resposta SSW.');
+                return null;
+            }
+            // Descodifica as entidades HTML para um XML válido
+            const decodedInnerXml = innerXmlMatch[1]
+                                    .replace(/&lt;/g, '<')
+                                    .replace(/&gt;/g, '>')
+                                    .replace(/&quot;/g, '"')
+                                    .replace(/&amp;/g, '&'); // Certifique-se de descodificar &amp; antes de outras!
+
+            console.log('XML Interno Descodificado para Parse:', decodedInnerXml);
+
+            return new Promise((resolve, reject) => {
+                xml2js.parseString(decodedInnerXml, { explicitArray: false, mergeAttrs: true }, (err, result) => {
+                    if (err) {
+                        console.error('Erro ao parsear XML interno da SSW:', err);
+                        return reject(err);
+                    }
+                    if (result && result.cotacao) {
+                        const frete = result.cotacao.frete ? parseFloat(result.cotacao.frete.replace('.', '').replace(',', '.')) : 0;
+                        const prazo = result.cotacao.prazo ? parseInt(result.cotacao.prazo, 10) : 0;
+                        const erro = result.cotacao.erro ? parseInt(result.cotacao.erro, 10) : -1;
+                        const mensagem = result.cotacao.mensagem || 'Erro desconhecido';
+
+                        if (erro === 0) { // Se o erro for 0, a cotação foi bem sucedida
+                           return resolve({ frete, prazo, mensagem });
+                        } else {
+                           console.warn(`SSW Retorno - Erro ${erro}: ${mensagem}`);
+                           return resolve(null); // Retorna null ou um objeto com erro
+                        }
+                    }
+                    resolve(null); // Caso não encontre a estrutura esperada
+                });
+            });
+        };
+
 
         // --- Requisição para SSW Rodoviária ---
         try {
             const payloadRodoviarioSSW = createSoapEnvelope({
-                mercadoria: 1, // Exemplo: 1 para Geral. Confirme com SSW.
+                mercadoria: 1,
                 ciffob: 'C',
                 trt: 'N',
                 coletar: 'N',
@@ -160,35 +190,29 @@ app.post('/cotacao', async (req, res) => {
                 payloadRodoviarioSSW,
                 {
                     headers: {
-                        'Content-Type': 'text/xml; charset=utf-8', // <<< Content-Type para XML
-                        'SOAPAction': sswSoapAction // <<< SOAPAction obrigatório
+                        'Content-Type': 'text/xml; charset=utf-8',
+                        'SOAPAction': sswSoapAction
                     }
                 }
             );
 
-            // A resposta SOAP geralmente vem como XML. Precisamos parseá-la.
-            // Para simplicidade, vamos tentar uma regex ou parseador simples primeiro.
-            // Se a resposta for complexa, podemos precisar de uma lib de parsing XML (ex: xml2js)
             const sswResponseXml = responseRodoviarioSSW.data;
             console.log('Resposta Bruta SSW (Rodoviário - XML):', sswResponseXml);
 
-            // Tentar extrair o valor e prazo de um retorno XML simples
-            const matchValor = sswResponseXml.match(/<Valor xsi:type="xsd:string">([\d.,]+)<\/Valor>/);
-            const matchPrazo = sswResponseXml.match(/<Prazo xsi:type="xsd:string">(\d+)<\/Prazo>/); // Ajustado para capturar apenas números
-
-            const valorRodoviario = matchValor ? parseFloat(matchValor[1].replace('.', '').replace(',', '.')) : 0;
-            const prazoRodoviario = matchPrazo ? parseInt(matchPrazo[1], 10) : 0;
+            // Tenta parsear o XML aninhado da resposta
+            const cotacaoRodoviaria = await parseSswReturnXml(sswResponseXml);
             
-            if (valorRodoviario > 0) { // Apenas adiciona se tiver um valor válido
+            if (cotacaoRodoviaria && cotacaoRodoviaria.frete > 0) {
                 opcoesFrete.push({
                     "name": "Pajuçara Rodoviário",
                     "service": "Pajucara_Rodoviario",
-                    "price": valorRodoviario,
-                    "days": prazoRodoviario,
+                    "price": cotacaoRodoviaria.frete,
+                    "days": cotacaoRodoviaria.prazo,
                     "quote_id": "pajucara_rodoviario"
                 });
+                console.log('Cotação Rodoviária da Pajuçara adicionada com sucesso!');
             } else {
-                 console.warn('Pajuçara (Rodoviário): Não foi possível extrair valor/prazo ou valor é zero. Resposta XML:', sswResponseXml);
+                 console.warn('Pajuçara (Rodoviário): Não foi possível extrair valor/prazo válido ou frete é zero. Resposta XML original:', sswResponseXml);
             }
 
         } catch (error) {
@@ -200,23 +224,18 @@ app.post('/cotacao', async (req, res) => {
             }
         }
         
-        // --- Requisição para SSW Aérea (se aplicável, com tpServico diferente) ---
-        // Para a modalidade Aérea, você provavelmente precisará de um 'tpServico' diferente
-        // e possivelmente outros campos específicos para o cálculo aéreo da Pajuçara.
-        // Se a API 'cotarSite' suportar diferentes 'tpServico' ou houver outro método SOAP para aéreo,
-        // você precisará ajustar aqui. Por agora, vou duplicar, mas é algo a se investigar com a SSW.
+        // --- Requisição para SSW Aérea ---
+        // Se a API da Pajuçara tiver um método ou parâmetro específico para 'Aéreo',
+        // você precisará ajustar o 'createSoapEnvelope' ou o 'sswSoapAction' aqui.
+        // Por enquanto, está fazendo a mesma cotação do Rodoviário, o que pode não ser o ideal.
         try {
             const payloadAereoSSW = createSoapEnvelope({
-                mercadoria: 1, // Geral, mas pode ser diferente para Aéreo
+                mercadoria: 1, 
                 ciffob: 'C',
                 trt: 'N',
                 coletar: 'N',
                 entDificil: 'N',
                 destContribuinte: 'N'
-                // Aqui você pode adicionar um campo 'tpServico' se o WSDL permitir e se for diferente para Aéreo.
-                // Atualmente, o WSDL que você passou não tem 'tpServico' como um 'part' de 'cotarSite'.
-                // Isso sugere que 'cotarSite' é genérico e o tipo de serviço é inferido, ou há outro método.
-                // Se 'tpServico' for necessário, você precisará confirmar com a SSW como enviá-lo.
             }).toString();
 
             console.log('Payload SSW (Aéreo) Enviado (XML):', payloadAereoSSW);
@@ -235,22 +254,19 @@ app.post('/cotacao', async (req, res) => {
             const sswResponseXmlAereo = responseAereoSSW.data;
             console.log('Resposta Bruta SSW (Aéreo - XML):', sswResponseXmlAereo);
 
-            const matchValorAereo = sswResponseXmlAereo.match(/<Valor xsi:type="xsd:string">([\d.,]+)<\/Valor>/);
-            const matchPrazoAereo = sswResponseXmlAereo.match(/<Prazo xsi:type="xsd:string">(\d+)<\/Prazo>/);
+            const cotacaoAerea = await parseSswReturnXml(sswResponseXmlAereo);
 
-            const valorAereo = matchValorAereo ? parseFloat(matchValorAereo[1].replace('.', '').replace(',', '.')) : 0;
-            const prazoAereo = matchPrazoAereo ? parseInt(matchPrazoAereo[1], 10) : 0;
-
-            if (valorAereo > 0) {
+            if (cotacaoAerea && cotacaoAerea.frete > 0) {
                 opcoesFrete.push({
-                    "name": "Pajuçara Aéreo", // Ajuste o nome conforme a modalidade Aérea da Pajuçara
+                    "name": "Pajuçara Aéreo",
                     "service": "Pajucara_Aereo",
-                    "price": valorAereo,
-                    "days": prazoAereo,
+                    "price": cotacaoAerea.frete,
+                    "days": cotacaoAerea.prazo,
                     "quote_id": "pajucara_aereo"
                 });
+                console.log('Cotação Aérea da Pajuçara adicionada com sucesso!');
             } else {
-                 console.warn('Pajuçara (Aéreo): Não foi possível extrair valor/prazo ou valor é zero. Resposta XML:', sswResponseXmlAereo);
+                 console.warn('Pajuçara (Aéreo): Não foi possível extrair valor/prazo válido ou frete é zero. Resposta XML original:', sswResponseXmlAereo);
             }
 
 
