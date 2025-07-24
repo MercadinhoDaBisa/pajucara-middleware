@@ -2,19 +2,19 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const { create } = require('xmlbuilder2');
-const xml2js = require('xml2js');
+const { create } = require('xmlbuilder2'); // Necessário para construir o XML
+const xml2js = require('xml2js'); // Necessário para parsear o XML
 
 const app = express();
 
-app.use(express.raw({ type: 'application/json' }));
+app.use(express.raw({ type: 'application/json' })); // Para a validação de segurança da Yampi
 
 const YAMPI_SECRET_TOKEN = process.env.YAMPI_SECRET_TOKEN;
 const SSW_LOGIN = process.env.SSW_LOGIN;
 const SSW_PASSWORD = process.env.SSW_PASSWORD;
 const SSW_DOMAIN = process.env.SSW_DOMAIN;
 const SSW_CNPJ = process.env.SSW_CNPJ;
-const SSW_PAGADOR_PASSWORD = process.env.SSW_PAGADOR_PASSWORD || process.env.SSW_PASSWORD;
+const SSW_PAGADOR_PASSWORD = process.env.SSW_PAGADOR_PASSWORD || process.env.SSW_PASSWORD; // Usa a mesma senha se não houver uma específica para pagador
 
 app.post('/cotacao', async (req, res) => {
     console.log('Headers Recebidos:', req.headers);
@@ -22,12 +22,7 @@ app.post('/cotacao', async (req, res) => {
     const yampiSignature = req.headers['x-yampi-hmac-sha256'];
     const requestBodyRaw = req.body;
 
-    console.log('--- DIAGNÓSTICO DE SEGURANÇA YAMPI ---');
-    console.log('Assinatura Yampi recebida (X-Yampi-Hmac-SHA256):', yampiSignature);
-    console.log('Chave Secreta Yampi (YAMPI_SECRET_TOKEN do .env/Render):', YAMPI_SECRET_TOKEN);
-    console.log('Tipo da Assinatura recebida:', typeof yampiSignature);
-    console.log('Tipo da Chave Secreta:', typeof YAMPI_SECRET_TOKEN);
-
+    // --- Validação de Segurança Yampi ---
     if (!yampiSignature || !YAMPI_SECRET_TOKEN) {
         console.error('Erro de Segurança: Assinatura Yampi ou Chave Secreta ausente.');
         return res.status(401).json({ error: 'Acesso não autorizado. Assinatura ou Chave Secreta Yampi ausente.' });
@@ -39,16 +34,12 @@ app.post('/cotacao', async (req, res) => {
         const hmac = crypto.createHmac('sha256', YAMPI_SECRET_TOKEN);
         yampiData = JSON.parse(requestBodyRaw.toString('utf8'));
         const normalizedBodyString = JSON.stringify(yampiData);
-
         hmac.update(normalizedBodyString);
         calculatedSignature = hmac.digest('base64');
     } catch (error) {
         console.error('Erro ao calcular a assinatura HMAC ou parsear Yampi payload:', error.message);
         return res.status(500).json({ error: 'Erro interno na validação de segurança ou processamento do payload Yampi.' });
     }
-
-    console.log('Assinatura Calculada:', calculatedSignature);
-    console.log('Assinaturas são iguais?', calculatedSignature === yampiSignature);
 
     if (calculatedSignature !== yampiSignature) {
         console.error('Erro de Segurança: Assinatura Yampi inválida. Calculada:', calculatedSignature, 'Recebida:', yampiSignature);
@@ -60,10 +51,10 @@ app.post('/cotacao', async (req, res) => {
 
 
     try {
-        const cepOrigemFixo = "30720404";
+        const cepOrigemFixo = "30720404"; // Seu CEP de origem fixo
         const cepDestino = yampiData.zipcode ? yampiData.zipcode.replace(/\D/g, '') : null;
         const valorDeclarado = yampiData.amount || 0;
-        // >>> MODIFICAÇÃO AQUI: Adiciona CNPJ padrão se não houver documento
+        // Usa o documento do cliente ou um CNPJ genérico se não disponível
         const cnpjCpfDestinatario = yampiData.cart && yampiData.cart.customer && yampiData.cart.customer.document
             ? yampiData.cart.customer.document.replace(/\D/g, '')
             : "00000000000100"; // CNPJ genérico para teste se não houver
@@ -74,7 +65,7 @@ app.post('/cotacao', async (req, res) => {
         let primeiroSkuDimensao = { length: 0, width: 0, height: 0 }; // Para pegar as dimensões do primeiro item
 
         if (yampiData.skus && Array.isArray(yampiData.skus)) {
-            yampiData.skus.forEach((sku, index) => { // Adiciona index para pegar o primeiro
+            yampiData.skus.forEach((sku, index) => {
                 const pesoItem = sku.weight || 0;
                 const quantidadeItem = sku.quantity || 1;
                 const comprimento = sku.length || 0;
@@ -82,7 +73,7 @@ app.post('/cotacao', async (req, res) => {
                 const altura = sku.height || 0;
 
                 pesoTotal += pesoItem * quantidadeItem;
-                cubagemTotal += (comprimento * largura * altura / 1000000) * quantidadeItem;
+                cubagemTotal += (comprimento * largura * altura / 1000000) * quantidadeItem; // Cubagem em m³
                 qtdeVolumeTotal += quantidadeItem;
 
                 if (index === 0) { // Armazena as dimensões do primeiro SKU
@@ -96,6 +87,7 @@ app.post('/cotacao', async (req, res) => {
         const sswApiUrl = 'https://ssw.inf.br/ws/sswCotacaoColeta/index.php';
         const sswSoapAction = 'urn:sswinfbr.sswCotacaoColeta#cotarSite';
 
+        // Função para construir o envelope SOAP
         const createSoapEnvelope = (methodParams) => {
             const root = create({ version: '1.0', encoding: 'utf-8' })
                 .ele('SOAP-ENV:Envelope', {
@@ -121,7 +113,6 @@ app.post('/cotacao', async (req, res) => {
                         .ele('mercadoria', { 'xsi:type': 'xsd:integer' }).txt(methodParams.mercadoria || 1).up()
                         .ele('ciffob', { 'xsi:type': 'xsd:string' }).txt(methodParams.ciffob || 'C').up()
                         .ele('cnpjRemetente', { 'xsi:type': 'xsd:string' }).txt(SSW_CNPJ).up()
-                        // >>> MODIFICAÇÃO AQUI: Usa o CNPJ do cliente ou o padrão
                         .ele('cnpjDestinatario', { 'xsi:type': 'xsd:string' }).txt(cnpjCpfDestinatario).up()
                         .ele('observacao', { 'xsi:type': 'xsd:string' }).txt('').up()
                         .ele('trt', { 'xsi:type': 'xsd:string' }).txt(methodParams.trt || 'N').up()
@@ -129,10 +120,9 @@ app.post('/cotacao', async (req, res) => {
                         .ele('entDificil', { 'xsi:type': 'xsd:string' }).txt(methodParams.entDificil || 'N').up()
                         .ele('destContribuinte', { 'xsi:type': 'xsd:string' }).txt(methodParams.destContribuinte || 'N').up()
                         .ele('qtdePares', { 'xsi:type': 'xsd:integer' }).txt('0').up()
-                        // >>> MODIFICAÇÃO AQUI: Tenta enviar as dimensões reais, em metros
-                        .ele('altura', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.height / 100).toFixed(2)).up()
-                        .ele('largura', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.width / 100).toFixed(2)).up()
-                        .ele('comprimento', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.length / 100).toFixed(2)).up()
+                        .ele('altura', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.height / 100).toFixed(2)).up() // Altura em metros
+                        .ele('largura', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.width / 100).toFixed(2)).up()   // Largura em metros
+                        .ele('comprimento', { 'xsi:type': 'xsd:decimal' }).txt((primeiroSkuDimensao.length / 100).toFixed(2)).up() // Comprimento em metros
                         .ele('fatorMultiplicador', { 'xsi:type': 'xsd:integer' }).txt('1').up()
                     .up()
                 .up()
@@ -140,12 +130,14 @@ app.post('/cotacao', async (req, res) => {
             return root;
         };
 
+        // Função para parsear o XML de retorno da SSW
         const parseSswReturnXml = async (xmlString) => {
             const innerXmlMatch = xmlString.match(/<return xsi:type="xsd:string">([\s\S]*)<\/return>/);
             if (!innerXmlMatch || !innerXmlMatch[1]) {
                 console.error('Não foi possível encontrar o XML aninhado dentro da resposta SSW.');
                 return null;
             }
+            // Decodifica as entidades HTML no XML interno
             const decodedInnerXml = innerXmlMatch[1]
                                     .replace(/&lt;/g, '<')
                                     .replace(/&gt;/g, '>')
@@ -181,12 +173,12 @@ app.post('/cotacao', async (req, res) => {
         // --- Requisição para SSW Rodoviária ---
         try {
             const payloadRodoviarioSSW = createSoapEnvelope({
-                mercadoria: 1,
-                ciffob: 'C',
-                trt: 'N',
-                coletar: 'N',
-                entDificil: 'N',
-                destContribuinte: 'N'
+                mercadoria: 1, // Tipo de mercadoria (1 para Geral)
+                ciffob: 'C',   // CIF/FOB (C para CIF)
+                trt: 'N',      // Tratamento (N para Normal)
+                coletar: 'N',  // Coletar (N para Não)
+                entDificil: 'N', // Entrega Dificil (N para Não)
+                destContribuinte: 'N' // Destinatário Contribuinte (N para Não)
             }).toString();
 
             console.log('Payload SSW (Rodoviário) Enviado (XML):', payloadRodoviarioSSW);
@@ -207,13 +199,14 @@ app.post('/cotacao', async (req, res) => {
 
             const cotacaoRodoviaria = await parseSswReturnXml(sswResponseXml);
             
+            // Adiciona a cotação APENAS se o frete for maior que zero
             if (cotacaoRodoviaria && cotacaoRodoviaria.frete > 0) {
                 opcoesFrete.push({
-                    "name": "Pajuçara Rodoviário",
-                    "service": "Pajucara_Rodoviario", // >>> CONFIRME ESTE NOME NO PAINEL YAMPI
+                    "name": "Pajuçara Rodoviário", // O nome que você quer que apareça no checkout da Yampi
+                    "service": "RODOVIARIO",      // O "service" que funcionou no teste com a Yampi
                     "price": cotacaoRodoviaria.frete,
                     "days": cotacaoRodoviaria.prazo,
-                    "quote_id": "pajucara_rodoviario"
+                    "quote_id": "pajucara_rodoviario" // ID interno para seu controle
                 });
                 console.log('Cotação Rodoviária da Pajuçara adicionada com sucesso!');
             } else {
@@ -229,7 +222,9 @@ app.post('/cotacao', async (req, res) => {
             }
         }
         
-        // --- Requisição para SSW Aérea ---
+        // --- Requisição para SSW Aérea (se aplicável) ---
+        // Você pode duplicar a lógica acima para a cotação Aérea se a SSW tiver um serviço diferente
+        // para isso. Se não, remova esta parte.
         try {
             const payloadAereoSSW = createSoapEnvelope({
                 mercadoria: 1, 
@@ -260,11 +255,11 @@ app.post('/cotacao', async (req, res) => {
 
             if (cotacaoAerea && cotacaoAerea.frete > 0) {
                 opcoesFrete.push({
-                    "name": "Pajuçara Aéreo",
-                    "service": "Pajucara_Aereo", // >>> CONFIRME ESTE NOME NO PAINEL YAMPI
+                    "name": "Pajuçara Aéreo", // O nome que você quer que apareça no checkout da Yampi
+                    "service": "AEREO",         // O "service" que funcionou no teste com a Yampi
                     "price": cotacaoAerea.frete,
                     "days": cotacaoAerea.prazo,
-                    "quote_id": "pajucara_aereo"
+                    "quote_id": "pajucara_aereo" // ID interno para seu controle
                 });
                 console.log('Cotação Aérea da Pajuçara adicionada com sucesso!');
             } else {
@@ -281,7 +276,7 @@ app.post('/cotacao', async (req, res) => {
             }
         }
 
-
+        // --- Resposta Final para Yampi ---
         const respostaFinalYampi = {
             "quotes": opcoesFrete
         };
